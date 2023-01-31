@@ -1,45 +1,58 @@
-# Define variables for the pipeline
-variables:
-  jarName: 'myJar'
-  jarVersion: '1.0.0'
-  imageName: 'myImage'
-
-# Define a pipeline with multiple stages
 stages:
-- stage: Build
-  jobs:
-  - job: IncreaseVersion
-    steps:
-    - script: |
-        # Increase the patch version of the jar
-        $version = $env:jarVersion -split '\.'
-        $version[2] = [int]$version[2] + 1
-        $newVersion = -join $version
-        echo "##vso[task.setvariable variable=jarVersion]$newVersion"
-    - script: |
-        # Compile the code
-        mvn compile
-    - script: |
-        # Package the code into an artifact
-        mvn package
-    - task: PublishBuildArtifacts@1
-      inputs:
-        pathtoPublish: 'target/$(jarName)-$(jarVersion).jar'
-        artifactName: 'MyArtifact'
-- stage: Deploy
-  jobs:
-  - job: Deploy
-    steps:
-    - task: Docker@2
-      inputs:
-        command: 'buildAndPush'
-        containerregistrytype: 'DockerHub'
-        tags: '$(imageName):$(jarVersion)'
-        Dockerfile: 'Dockerfile'
-        arguments: '--build-arg JAR_FILE=$(jarName)-$(jarVersion).jar'
-    - task: Docker@2
-      inputs:
-        command: 'run'
-        containerregistrytype: 'DockerHub'
-        tags: '$(imageName):$(jarVersion)'
-        arguments: '-u 1000' # Run the container as a non-root user
+  - stage: Build
+    jobs:
+      - job: IncreaseVersion
+        steps:
+          - task: Bash@3
+            inputs:
+              targetType: 'inline'
+              script: |
+                version=$(cat target/classes/version.properties | grep version | awk -F "=" '{print $2}')
+                version=($(echo $version | tr "." "\n"))
+                version[2]=$((${version[2]}+1))
+                new_version="${version[0]}.${version[1]}.${version[2]}"
+                echo "Updating version to: $new_version"
+                sed -i "s/version=.*/version=$new_version/" target/classes/version.properties
+
+          - task: Maven@3
+            inputs:
+              mavenPomFile: 'pom.xml'
+              javaHomeOption: 'JDKVersion'
+              jdkVersion: '1.8'
+              publishJUnitResults: false
+              testResultsFiles: '**/surefire-reports/TEST-*.xml'
+              goals: 'clean install'
+
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: 'target'
+              Contents: '*.jar'
+              TargetFolder: '$(build.artifactstagingdirectory)'
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: '$(build.artifactstagingdirectory)'
+              ArtifactName: 'jar-artifact'
+
+          - task: Docker@2
+            inputs:
+              command: 'build'
+              containerRegistry: 'docker.io'
+              Dockerfile: 'Dockerfile'
+              arguments: '--build-arg JAR_FILE=$(System.DefaultWorkingDirectory)/_build/$(Build.BuildId)/$(Build.DefinitionName)/jar-artifact/*.jar'
+              tags: '$(Build.BuildId)'
+
+          - task: Bash@3
+            inputs:
+              targetType: 'inline'
+              script: |
+                version=$(cat target/classes/version.properties | grep version | awk -F "=" '{print $2}')
+                echo "Tagging Docker image with version: $version"
+                docker tag $(Build.BuildId) "$(containerRegistry)/$(Build.Repository)/$(Build.DefinitionName):$version"
+
+          - task: Docker@2
+            inputs:
+              command: 'push'
+              containerRegistry: 'docker.io'
+              tags: '$(Build.BuildId)'
+

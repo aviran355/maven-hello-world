@@ -1,0 +1,43 @@
+# Define variables for the pipeline
+variables:
+  jarName: 'myJar'
+  jarVersion: '1.0.0'
+  imageName: 'myImage'
+
+# Define a pipeline with multiple stages
+stages:
+- stage: Build
+  jobs:
+  - job: IncreaseVersion
+    steps:
+    - script: |
+        # Increase the patch version of the jar
+        $version = $env:jarVersion -split '\.'
+        $version[2] = [int]$version[2] + 1
+        $newVersion = -join $version
+        echo "##vso[task.setvariable variable=jarVersion]$newVersion"
+    - script: |
+        # Compile the code
+        mvn compile
+    - script: |
+        # Package the code into an artifact
+        mvn package
+    - task: PublishBuildArtifacts@1
+      inputs:
+        pathtoPublish: 'target/$(jarName)-$(jarVersion).jar'
+        artifactName: 'MyArtifact'
+
+- stage: Deploy
+  jobs:
+  - job: Deploy
+    steps:
+    - task: Docker@2
+      inputs: 
+        containerregistry: |
+          $(DockerHub)
+        command: docker push aviranmashiach/lesson9:$newVersion
+        tags: '$(imageName):$(jarVersion)'
+        Dockerfile: 'Dockerfile'
+        arguments: '--build-arg JAR_FILE=$(jarName)-$(jarVersion).jar'
+        arguments: '-u 1000' # Run the container as a non-root user
+
